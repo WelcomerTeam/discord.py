@@ -1,3 +1,4 @@
+"""
 The MIT License (MIT)
 
 Copyright (c) 2015-2021 Rapptz
@@ -20,3 +21,26 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
 FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
+"""
+
+from __future__ import annotations
+
+from typing import TypedDict, List, Optional
+
+from .user import PartialUser
+from .snowflake import Snowflake
+
+
+class TeamMember(TypedDict):
+    user: PartialUser
+    membership_state: int
+    permissions: List[str]
+    team_id: Snowflake
+
+
+class Team(TypedDict):
+    id: Snowflake
+    name: str
+    owner_id: Snowflake
+    members: List[TeamMember]
+    icon: Optional[str]

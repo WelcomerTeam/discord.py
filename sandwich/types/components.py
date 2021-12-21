@@ -1,3 +1,4 @@
+"""
 The MIT License (MIT)
 
 Copyright (c) 2015-2021 Rapptz
@@ -20,3 +21,57 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
 FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
+"""
+
+from __future__ import annotations
+
+from typing import List, Literal, TypedDict, Union
+from .emoji import PartialEmoji
+
+ComponentType = Literal[1, 2, 3]
+ButtonStyle = Literal[1, 2, 3, 4, 5]
+
+
+class ActionRow(TypedDict):
+    type: Literal[1]
+    components: List[Component]
+
+
+class _ButtonComponentOptional(TypedDict, total=False):
+    custom_id: str
+    url: str
+    disabled: bool
+    emoji: PartialEmoji
+    label: str
+
+
+class ButtonComponent(_ButtonComponentOptional):
+    type: Literal[2]
+    style: ButtonStyle
+
+
+class _SelectMenuOptional(TypedDict, total=False):
+    placeholder: str
+    min_values: int
+    max_values: int
+    disabled: bool
+
+
+class _SelectOptionsOptional(TypedDict, total=False):
+    description: str
+    emoji: PartialEmoji
+
+
+class SelectOption(_SelectOptionsOptional):
+    label: str
+    value: str
+    default: bool
+
+
+class SelectMenu(_SelectMenuOptional):
+    type: Literal[3]
+    custom_id: str
+    options: List[SelectOption]
+
+
+Component = Union[ActionRow, ButtonComponent, SelectMenu]

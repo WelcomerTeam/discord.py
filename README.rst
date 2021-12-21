@@ -75,7 +75,7 @@ Quick Example
 
 .. code:: py
 
-    import discord
+    import sandwich
 
     class MyClient(discord.Client):
         async def on_ready(self):
@@ -97,7 +97,7 @@ Bot Example
 
 .. code:: py
 
-    import discord
+    import sandwich
     from discord.ext import commands
 
     bot = commands.Bot(command_prefix='>')

@@ -1,3 +1,4 @@
+"""
 The MIT License (MIT)
 
 Copyright (c) 2015-2021 Rapptz
@@ -20,3 +21,27 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
 FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
+"""
+
+from typing import Optional, TypedDict
+from .snowflake import Snowflake, SnowflakeList
+from .user import User
+
+
+class PartialEmoji(TypedDict):
+    id: Optional[Snowflake]
+    name: Optional[str]
+
+
+class Emoji(PartialEmoji, total=False):
+    roles: SnowflakeList
+    user: User
+    require_colons: bool
+    managed: bool
+    animated: bool
+    available: bool
+
+
+class EditEmoji(TypedDict):
+    name: str
+    roles: Optional[SnowflakeList]

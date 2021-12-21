@@ -1,3 +1,4 @@
+"""
 The MIT License (MIT)
 
 Copyright (c) 2015-2021 Rapptz
@@ -20,3 +21,30 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
 FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
+"""
+
+from __future__ import annotations
+
+from typing import TypedDict
+from .snowflake import Snowflake
+
+
+class _RoleOptional(TypedDict, total=False):
+    tags: RoleTags
+
+
+class Role(_RoleOptional):
+    id: Snowflake
+    name: str
+    color: int
+    hoist: bool
+    position: int
+    permissions: str
+    managed: bool
+    mentionable: bool
+
+
+class RoleTags(TypedDict, total=False):
+    bot_id: Snowflake
+    integration_id: Snowflake
+    premium_subscriber: None

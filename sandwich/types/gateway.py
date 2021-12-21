@@ -1,3 +1,4 @@
+"""
 The MIT License (MIT)
 
 Copyright (c) 2015-2021 Rapptz
@@ -20,3 +21,22 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
 FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
+"""
+
+from typing import TypedDict
+
+
+class SessionStartLimit(TypedDict):
+    total: int
+    remaining: int
+    reset_after: int
+    max_concurrency: int
+
+
+class Gateway(TypedDict):
+    url: str
+
+
+class GatewayBot(Gateway):
+    shards: int
+    session_start_limit: SessionStartLimit
