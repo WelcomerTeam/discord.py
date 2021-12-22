@@ -366,7 +366,7 @@ class Cog(metaclass=CogMeta):
 
     @_cog_special_method
     def cog_check(self, ctx: Context) -> bool:
-        """A special method that registers as a :func:`~sandwich.ext.commands.check`
+        """A special method that registers as a :func:`~sandwich.check`
         for every command and subcommand in this cog.
 
         This function **can** be a coroutine and must take a sole parameter,

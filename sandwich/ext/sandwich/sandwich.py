@@ -1,9 +1,9 @@
 import types
-from typing import Any, Dict, Mapping, Optional
+from typing import Dict, Mapping, Optional
 
 import sandwich
-from sandwich.ext.commands.bot import Bot, BotBase
-from sandwich.ext.sandwich.abc import SandwichEvent, SandwichPayload
+from sandwich.bot import Bot, BotBase
+from sandwich.abc import SandwichEvent
 
 from .channel import Channel
 from .connection import ConnectionMixin
@@ -12,20 +12,13 @@ from .connection import ConnectionMixin
 class SandwichBase():
     def __init__(self, **options):
         self.__bots: Dict[str, BotBase] = {}
-        self._connection: ConnectionMixin = options.get('connection')
-        self._channel: Channel = options.get('channel')
 
     # internal helpers
 
-    def dispatch(self, payload: SandwichEvent) -> None:
-        bot: Bot = self.__bots.get(payload.producer_identifier)
+    def dispatch(self, event: SandwichEvent) -> None:
+        bot: Bot = self.__bots.get(event.producer_identifier)
         if bot:
-            event_name = payload.event_name
-            data = payload.data
-
-            bot._connection.user = sandwich.ClientUser(
-                state=bot._connection, data={"id": payload.application_id, "username": "", "discriminator": "", "avatar": ""})
-            bot.ws.handle_dispatch(event_name, data)
+            bot.handle_dispatch(event)
 
     # bots
 

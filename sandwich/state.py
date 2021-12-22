@@ -36,8 +36,6 @@ import inspect
 
 import os
 
-from sandwich.gateway import DiscordWebSocket
-
 from .guild import Guild
 from .activity import BaseActivity
 from .user import User, ClientUser
@@ -68,7 +66,6 @@ if TYPE_CHECKING:
     from .guild import GuildChannel, VocalGuildChannel
     from .http import HTTPClient
     from .client import Client
-    from .gateway import DiscordWebSocket
 
     from .types.activity import Activity as ActivityPayload
     from .types.channel import DMChannel as DMChannelPayload
@@ -144,7 +141,6 @@ async def logging_coroutine(coroutine: Coroutine[Any, Any, T], *, info: str) -> 
 
 class ConnectionState:
     if TYPE_CHECKING:
-        _get_websocket: Callable[..., DiscordWebSocket]
         _get_client: Callable[..., Client]
         _parsers: Dict[str, Callable[[Dict[str, Any]], None]]
 
@@ -318,13 +314,6 @@ class ConnectionState:
         ret.value = self._intents.value
         return ret
 
-    def _remove_voice_client(self, guild_id: int) -> None:
-        self._voice_clients.pop(guild_id, None)
-
-    def _update_references(self, ws: DiscordWebSocket) -> None:
-        for vc in self.voice_clients:
-            vc.main_ws = ws  # type: ignore
-
     def store_user(self, data: UserPayload) -> User:
         user_id = int(data['id'])
         try:
@@ -483,77 +472,10 @@ class ConnectionState:
     async def chunker(
         self, guild_id: int, query: str = '', limit: int = 0, presences: bool = False, *, nonce: Optional[str] = None
     ) -> None:
-        ws = self._get_websocket(guild_id)  # This is ignored upstream
-        await ws.request_chunks(guild_id, query=query, limit=limit, presences=presences, nonce=nonce)
+        raise NotImplementedError()
 
     async def query_members(self, guild: Guild, query: str, limit: int, user_ids: List[int], cache: bool, presences: bool):
-        guild_id = guild.id
-        ws = self._get_websocket(guild_id)
-        if ws is None:
-            raise RuntimeError(
-                'Somehow do not have a websocket for this guild_id')
-
-        request = ChunkRequest(guild.id, self.loop,
-                               self._get_guild, cache=cache)
-        self._chunk_requests[request.nonce] = request
-
-        try:
-            # start the query operation
-            await ws.request_chunks(
-                guild_id, query=query, limit=limit, user_ids=user_ids, presences=presences, nonce=request.nonce
-            )
-            return await asyncio.wait_for(request.wait(), timeout=30.0)
-        except asyncio.TimeoutError:
-            _log.warning(
-                'Timed out waiting for chunks with query %r and limit %d for guild_id %d', query, limit, guild_id)
-            raise
-
-    async def _delay_ready(self) -> None:
-        try:
-            states = []
-            while True:
-                # this snippet of code is basically waiting N seconds
-                # until the last GUILD_CREATE was sent
-                try:
-                    guild = await asyncio.wait_for(self._ready_state.get(), timeout=self.guild_ready_timeout)
-                except asyncio.TimeoutError:
-                    break
-                else:
-                    if self._guild_needs_chunking(guild):
-                        future = await self.chunk_guild(guild, wait=False)
-                        states.append((guild, future))
-                    else:
-                        if guild.unavailable is False:
-                            self.dispatch('guild_available', guild)
-                        else:
-                            self.dispatch('guild_join', guild)
-
-            for guild, future in states:
-                try:
-                    await asyncio.wait_for(future, timeout=5.0)
-                except asyncio.TimeoutError:
-                    _log.warning(
-                        'Shard ID %s timed out waiting for chunks for guild_id %s.', guild.shard_id, guild.id)
-
-                if guild.unavailable is False:
-                    self.dispatch('guild_available', guild)
-                else:
-                    self.dispatch('guild_join', guild)
-
-            # remove the state
-            try:
-                del self._ready_state
-            except AttributeError:
-                pass  # already been deleted somehow
-
-        except asyncio.CancelledError:
-            pass
-        else:
-            # dispatch the event
-            self.call_handlers('ready')
-            self.dispatch('ready')
-        finally:
-            self._ready_task = None
+        raise NotImplementedError()
 
     def parse_ready(self, data) -> None:
         if self._ready_task is not None:
@@ -1470,143 +1392,3 @@ class ConnectionState:
         self, *, channel: Union[TextChannel, Thread, DMChannel, GroupChannel, PartialMessageable], data: MessagePayload
     ) -> Message:
         return Message(state=self, channel=channel, data=data)
-
-
-class AutoShardedConnectionState(ConnectionState):
-    def __init__(self, *args: Any, **kwargs: Any) -> None:
-        super().__init__(*args, **kwargs)
-        self.shard_ids: Union[List[int], range] = []
-        self.shards_launched: asyncio.Event = asyncio.Event()
-
-    def _update_message_references(self) -> None:
-        # self._messages won't be None when this is called
-        for msg in self._messages:  # type: ignore
-            if not msg.guild:
-                continue
-
-            new_guild = self._get_guild(msg.guild.id)
-            if new_guild is not None and new_guild is not msg.guild:
-                channel_id = msg.channel.id
-                channel = new_guild._resolve_channel(
-                    channel_id) or Object(id=channel_id)
-                # channel will either be a TextChannel, Thread or Object
-                msg._rebind_cached_references(
-                    new_guild, channel)  # type: ignore
-
-    async def chunker(
-        self,
-        guild_id: int,
-        query: str = '',
-        limit: int = 0,
-        presences: bool = False,
-        *,
-        shard_id: Optional[int] = None,
-        nonce: Optional[str] = None,
-    ) -> None:
-        ws = self._get_websocket(guild_id, shard_id=shard_id)
-        await ws.request_chunks(guild_id, query=query, limit=limit, presences=presences, nonce=nonce)
-
-    async def _delay_ready(self) -> None:
-        await self.shards_launched.wait()
-        processed = []
-        max_concurrency = len(self.shard_ids) * 2
-        current_bucket = []
-        while True:
-            # this snippet of code is basically waiting N seconds
-            # until the last GUILD_CREATE was sent
-            try:
-                guild = await asyncio.wait_for(self._ready_state.get(), timeout=self.guild_ready_timeout)
-            except asyncio.TimeoutError:
-                break
-            else:
-                if self._guild_needs_chunking(guild):
-                    _log.debug(
-                        'Guild ID %d requires chunking, will be done in the background.', guild.id)
-                    if len(current_bucket) >= max_concurrency:
-                        try:
-                            await utils.sane_wait_for(current_bucket, timeout=max_concurrency * 70.0)
-                        except asyncio.TimeoutError:
-                            fmt = 'Shard ID %s failed to wait for chunks from a sub-bucket with length %d'
-                            _log.warning(fmt, guild.shard_id,
-                                         len(current_bucket))
-                        finally:
-                            current_bucket = []
-
-                    # Chunk the guild in the background while we wait for GUILD_CREATE streaming
-                    future = asyncio.ensure_future(self.chunk_guild(guild))
-                    current_bucket.append(future)
-                else:
-                    future = self.loop.create_future()
-                    future.set_result([])
-
-                processed.append((guild, future))
-
-        guilds = sorted(processed, key=lambda g: g[0].shard_id)
-        for shard_id, info in itertools.groupby(guilds, key=lambda g: g[0].shard_id):
-            children, futures = zip(*info)
-            # 110 reqs/minute w/ 1 req/guild plus some buffer
-            timeout = 61 * (len(children) / 110)
-            try:
-                await utils.sane_wait_for(futures, timeout=timeout)
-            except asyncio.TimeoutError:
-                _log.warning(
-                    'Shard ID %s failed to wait for chunks (timeout=%.2f) for %d guilds', shard_id, timeout, len(
-                        guilds)
-                )
-            for guild in children:
-                if guild.unavailable is False:
-                    self.dispatch('guild_available', guild)
-                else:
-                    self.dispatch('guild_join', guild)
-
-            self.dispatch('shard_ready', shard_id)
-
-        # remove the state
-        try:
-            del self._ready_state
-        except AttributeError:
-            pass  # already been deleted somehow
-
-        # regular users cannot shard so we won't worry about it here.
-
-        # clear the current task
-        self._ready_task = None
-
-        # dispatch the event
-        self.call_handlers('ready')
-        self.dispatch('ready')
-
-    def parse_ready(self, data) -> None:
-        if not hasattr(self, '_ready_state'):
-            self._ready_state = asyncio.Queue()
-
-        self.user = user = ClientUser(state=self, data=data['user'])
-        # self._users is a list of Users, we're setting a ClientUser
-        self._users[user.id] = user  # type: ignore
-
-        if self.application_id is None:
-            try:
-                application = data['application']
-            except KeyError:
-                pass
-            else:
-                self.application_id = utils._get_as_snowflake(
-                    application, 'id')
-                self.application_flags = ApplicationFlags._from_value(
-                    application['flags'])
-
-        for guild_data in data['guilds']:
-            self._add_guild_from_data(guild_data)
-
-        if self._messages:
-            self._update_message_references()
-
-        self.dispatch('connect')
-        self.dispatch('shard_connect', data['__shard_id__'])
-
-        if self._ready_task is None:
-            self._ready_task = asyncio.create_task(self._delay_ready())
-
-    def parse_resumed(self, data) -> None:
-        self.dispatch('resumed')
-        self.dispatch('shard_resumed', data['__shard_id__'])

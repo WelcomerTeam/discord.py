@@ -25,9 +25,21 @@ DEALINGS IN THE SOFTWARE.
 
 from __future__ import annotations
 
-from typing import Any, Callable, ClassVar, Dict, Generic, Iterator, List, Optional, Tuple, Type, TypeVar, overload
+from typing import Any, Callable, ClassVar, Dict, Iterator, List, Optional, Tuple, Type, TypeVar, overload
 
 from .enums import UserFlags
+
+from typing import (
+    Dict,
+    Iterator,
+    Optional,
+    Tuple,
+    List,
+    Any,
+    Type,
+    TypeVar,
+)
+
 
 __all__ = (
     'SystemChannelFlags',
@@ -35,8 +47,8 @@ __all__ = (
     'PublicUserFlags',
     'Intents',
     'MemberCacheFlags',
-    'ApplicationFlags',
-)
+    'ApplicationFlags',)
+
 
 FV = TypeVar('FV', bound='flag_value')
 BF = TypeVar('BF', bound='BaseFlags')

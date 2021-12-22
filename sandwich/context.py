@@ -42,9 +42,8 @@ if TYPE_CHECKING:
     from sandwich.member import Member
     from sandwich.state import ConnectionState
     from sandwich.user import ClientUser, User
-    from sandwich.voice_client import VoiceProtocol
 
-    from .bot import Bot, AutoShardedBot
+    from .bot import Bot
     from .cog import Cog
     from .core import Command
     from .help import HelpCommand
@@ -58,7 +57,7 @@ MISSING: Any = sandwich.utils.MISSING
 
 
 T = TypeVar('T')
-BotT = TypeVar('BotT', bound="Union[Bot, AutoShardedBot]")
+BotT = TypeVar('BotT', bound="Bot")
 CogT = TypeVar('CogT', bound="Cog")
 
 if TYPE_CHECKING:
@@ -308,12 +307,6 @@ class Context(sandwich.abc.Messageable, Generic[BotT]):
         """
         # bot.user will never be None at this point.
         return self.guild.me if self.guild is not None else self.bot.user  # type: ignore
-
-    @property
-    def voice_client(self) -> Optional[VoiceProtocol]:
-        r"""Optional[:class:`.VoiceProtocol`]: A shortcut to :attr:`.Guild.voice_client`\, if applicable."""
-        g = self.guild
-        return g.voice_client if g else None
 
     async def send_help(self, *args: Any) -> Any:
         """send_help(entity=<bot>)

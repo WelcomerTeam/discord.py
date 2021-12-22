@@ -26,6 +26,7 @@ DEALINGS IN THE SOFTWARE.
 from __future__ import annotations
 
 import asyncio
+from collections import namedtuple
 import logging
 import signal
 import sys
@@ -33,8 +34,9 @@ import traceback
 from typing import Any, Callable, Coroutine, Dict, Generator, List, Optional, Sequence, TYPE_CHECKING, Tuple, TypeVar, Union
 
 import aiohttp
-
-from sandwich.protobuf.events_pb2_grpc import SandwichStub
+from sandwich.abc import SandwichEvent
+from sandwich.ext.sandwich.channel import Channel
+from sandwich.ext.sandwich.connection import ConnectionMixin
 
 from .user import User, ClientUser
 from .invite import Invite
@@ -48,7 +50,6 @@ from .mentions import AllowedMentions
 from .errors import *
 from .enums import Status, VoiceRegion
 from .flags import ApplicationFlags, Intents
-from .gateway import *
 from .activity import ActivityTypes, BaseActivity, create_activity
 from .http import HTTPClient
 from .state import ConnectionState
@@ -74,6 +75,7 @@ __all__ = (
     'Client',
 )
 
+EventListener = namedtuple('EventListener', 'predicate event result future')
 Coro = TypeVar('Coro', bound=Callable[..., Coroutine[Any, Any, Any]])
 
 
@@ -208,11 +210,13 @@ class Client:
     def __init__(
         self,
         *,
-        stub: SandwichStub,
+        connection: ConnectionMixin,
+        channel: Channel,
         loop: Optional[asyncio.AbstractEventLoop] = None,
         **options: Any,
     ):
-        self.stub: SandwichStub = stub
+        self.connection: ConnectionMixin = connection
+        self.channel: Channel = channel
         self.loop: asyncio.AbstractEventLoop = asyncio.get_event_loop() if loop is None else loop
         self._listeners: Dict[str,
                               List[Tuple[asyncio.Future, Callable[..., bool]]]] = {}
@@ -242,7 +246,6 @@ class Client:
         self._connection.shard_count = self.shard_count
         self._closed: bool = False
         self._ready: asyncio.Event = asyncio.Event()
-        self._connection._get_websocket = self._get_websocket
         self._connection._get_client = lambda: self
 
         # an empty dispatcher to prevent crashes
@@ -250,13 +253,7 @@ class Client:
         # generic event listeners
         self._dispatch_listeners = []
 
-        # self._discord_parsers = client._connection.parsers
-        # self._dispatch = client.dispatch
-
     # internals
-
-    def _get_websocket(self, guild_id: Optional[int] = None, *, shard_id: Optional[int] = None) -> DiscordWebSocket:
-        return self.ws
 
     def _get_state(self, **options: Any) -> ConnectionState:
         return ConnectionState(dispatch=self.dispatch, handlers=self._handlers,
@@ -267,24 +264,7 @@ class Client:
 
     @property
     def latency(self) -> float:
-        """:class:`float`: Measures latency between a HEARTBEAT and a HEARTBEAT_ACK in seconds.
-
-        This could be referred to as the Discord WebSocket protocol latency.
-        """
-        ws = self.ws
-        return float('nan') if not ws else ws.latency
-
-    def is_ws_ratelimited(self) -> bool:
-        """:class:`bool`: Whether the websocket is currently rate limited.
-
-        This can be useful to know when deciding whether you should query members
-        using HTTP or via the gateway.
-
-        .. versionadded:: 1.6
-        """
-        if self.ws:
-            return self.ws.is_ratelimited()
-        return False
+        return float('nan')
 
     @property
     def user(self) -> Optional[ClientUser]:
@@ -480,87 +460,6 @@ class Client:
         data = await self.http.static_login(token.strip())
         self._connection.user = ClientUser(state=self._connection, data=data)
 
-    async def connect(self, *, reconnect: bool = True) -> None:
-        """|coro|
-
-        Creates a websocket connection and lets the websocket listen
-        to messages from Discord. This is a loop that runs the entire
-        event system and miscellaneous aspects of the library. Control
-        is not resumed until the WebSocket connection is terminated.
-
-        Parameters
-        -----------
-        reconnect: :class:`bool`
-            If we should attempt reconnecting, either due to internet
-            failure or a specific failure on Discord's part. Certain
-            disconnects that lead to bad state will not be handled (such as
-            invalid sharding payloads or bad tokens).
-
-        Raises
-        -------
-        :exc:`.GatewayNotFound`
-            If the gateway to connect to Discord is not found. Usually if this
-            is thrown then there is a Discord API outage.
-        :exc:`.ConnectionClosed`
-            The websocket connection has been terminated.
-        """
-
-        backoff = ExponentialBackoff()
-        ws_params = {
-            'initial': True,
-            'shard_id': self.shard_id,
-        }
-        while not self.is_closed():
-            try:
-                coro = DiscordWebSocket.from_client(self, **ws_params)
-                self.ws = await asyncio.wait_for(coro, timeout=60.0)
-                ws_params['initial'] = False
-                while True:
-                    await self.ws.poll_event()
-            except (OSError,
-                    HTTPException,
-                    GatewayNotFound,
-                    ConnectionClosed,
-                    aiohttp.ClientError,
-                    asyncio.TimeoutError) as exc:
-
-                self.dispatch('disconnect')
-                if not reconnect:
-                    await self.close()
-                    if isinstance(exc, ConnectionClosed) and exc.code == 1000:
-                        # clean close, don't re-raise this
-                        return
-                    raise
-
-                if self.is_closed():
-                    return
-
-                # If we get connection reset by peer then try to RESUME
-                if isinstance(exc, OSError) and exc.errno in (54, 10054):
-                    ws_params.update(
-                        sequence=self.ws.sequence, initial=False, resume=True, session=self.ws.session_id)
-                    continue
-
-                # We should only get this when an unhandled close code happens,
-                # such as a clean disconnect (1000) or a bad state (bad token, no sharding, etc)
-                # sometimes, discord sends us 1000 for unknown reasons so we should reconnect
-                # regardless and rely on is_closed instead
-                if isinstance(exc, ConnectionClosed):
-                    if exc.code == 4014:
-                        raise PrivilegedIntentsRequired(exc.shard_id) from None
-                    if exc.code != 1000:
-                        await self.close()
-                        raise
-
-                retry = backoff.delay()
-                _log.exception("Attempting a reconnect in %.2fs", retry)
-                await asyncio.sleep(retry)
-                # Always try to RESUME the connection
-                # If the connection is not RESUME-able then the gateway will invalidate the session.
-                # This is apparently what the official Discord client does.
-                ws_params.update(sequence=self.ws.sequence,
-                                 resume=True, session=self.ws.session_id)
-
     async def close(self) -> None:
         """|coro|
 
@@ -570,9 +469,6 @@ class Client:
             return
 
         self._closed = True
-
-        if self.ws is not None and self.ws.open:
-            await self.ws.close(code=1000)
 
         await self.http.close()
         self._ready.clear()
@@ -1010,6 +906,74 @@ class Client:
 
         listeners.append((future, check))
         return asyncio.wait_for(future, timeout)
+
+    # event handling
+
+    def wait_for(self, event, predicate, result=None):
+        """Waits for a DISPATCH'd event that meets the predicate.
+
+        Parameters
+        -----------
+        event: :class:`str`
+            The event name in all upper case to wait for.
+        predicate
+            A function that takes a data parameter to check for event
+            properties. The data parameter is the 'd' key in the JSON message.
+        result
+            A function that takes the same data parameter and executes to send
+            the result to the future. If ``None``, returns the data.
+
+        Returns
+        --------
+        asyncio.Future
+            A future to wait for.
+        """
+
+        future = self.loop.create_future()
+        entry = EventListener(
+            event=event, predicate=predicate, result=result, future=future)
+        self._dispatch_listeners.append(entry)
+        return future
+
+    # def handle_dispatch(self, event: str, data: any) -> None:
+    def handle_dispatch(self, event: SandwichEvent) -> None:
+        event_name = event.event_name
+        data = event.data
+
+        self._connection.user = ClientUser(
+            state=self._connection, data={"id": event.application_id, "username": "", "discriminator": "", "avatar": ""})
+
+        try:
+            func = self._connection.parsers[event_name]
+        except KeyError:
+            _log.debug('Unknown event %s.', event_name)
+        else:
+            func(data)
+
+        # remove the dispatched listeners
+        removed = []
+        for index, entry in enumerate(self._dispatch_listeners):
+            if entry.event != event_name:
+                continue
+
+            future = entry.future
+            if future.cancelled():
+                removed.append(index)
+                continue
+
+            try:
+                valid = entry.predicate(data)
+            except Exception as exc:
+                future.set_exception(exc)
+                removed.append(index)
+            else:
+                if valid:
+                    ret = data if entry.result is None else entry.result(data)
+                    future.set_result(ret)
+                    removed.append(index)
+
+        for index in reversed(removed):
+            del self._dispatch_listeners[index]
 
     # event registration
 

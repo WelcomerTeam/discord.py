@@ -37,11 +37,11 @@ import types
 from typing import Any, Callable, Mapping, List, Dict, TYPE_CHECKING, Optional, TypeVar, Type, Union
 
 import sandwich
+from sandwich import errors
 
 from .core import GroupMixin
 from .view import StringView
 from .context import Context
-from . import errors
 from .help import HelpCommand, DefaultHelpCommand
 from .cog import Cog
 
@@ -58,7 +58,6 @@ __all__ = (
     'when_mentioned',
     'when_mentioned_or',
     'Bot',
-    'AutoShardedBot',
 )
 
 MISSING: Any = sandwich.utils.MISSING
@@ -68,7 +67,7 @@ CFT = TypeVar('CFT', bound='CoroFunc')
 CXT = TypeVar('CXT', bound='Context')
 
 
-def when_mentioned(bot: Union[Bot, AutoShardedBot], msg: Message) -> List[str]:
+def when_mentioned(bot: Bot, msg: Message) -> List[str]:
     """A callable that implements a command prefix equivalent to being mentioned.
 
     These are meant to be passed into the :attr:`.Bot.command_prefix` attribute.
@@ -77,7 +76,7 @@ def when_mentioned(bot: Union[Bot, AutoShardedBot], msg: Message) -> List[str]:
     return [f'<@{bot.user.id}> ', f'<@!{bot.user.id}> ']  # type: ignore
 
 
-def when_mentioned_or(*prefixes: str) -> Callable[[Union[Bot, AutoShardedBot], Message], List[str]]:
+def when_mentioned_or(*prefixes: str) -> Callable[[Bot, Message], List[str]]:
     """A callable that implements when mentioned or other prefixes provided.
 
     These are meant to be passed into the :attr:`.Bot.command_prefix` attribute.
@@ -1120,12 +1119,5 @@ class Bot(BotBase, sandwich.Client):
         the ``command_prefix`` is set to ``!``. Defaults to ``False``.
 
         .. versionadded:: 1.7
-    """
-    pass
-
-
-class AutoShardedBot(BotBase, sandwich.AutoShardedClient):
-    """This is similar to :class:`.Bot` except that it is inherited from
-    :class:`sandwich.AutoShardedClient` instead.
     """
     pass

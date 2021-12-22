@@ -2957,25 +2957,3 @@ class Guild(Hashable):
         return await self._state.query_members(
             self, query=query, limit=limit, user_ids=user_ids, presences=presences, cache=cache
         )
-
-    async def change_voice_state(
-        self, *, channel: Optional[VocalGuildChannel], self_mute: bool = False, self_deaf: bool = False
-    ):
-        """|coro|
-
-        Changes client's voice state in the guild.
-
-        .. versionadded:: 1.4
-
-        Parameters
-        -----------
-        channel: Optional[:class:`VoiceChannel`]
-            Channel the client wants to join. Use ``None`` to disconnect.
-        self_mute: :class:`bool`
-            Indicates if the client should be self-muted.
-        self_deaf: :class:`bool`
-            Indicates if the client should be self-deafened.
-        """
-        ws = self._state._get_websocket(self.id)
-        channel_id = channel.id if channel else None
-        await ws.voice_state(self.id, channel_id, self_mute, self_deaf)

@@ -51,7 +51,6 @@ packages = [
     'sandwich.types',
     'sandwich.ui',
     'sandwich.webhook',
-    'sandwich.ext.commands',
     'sandwich.ext.tasks',
     'sandwich.ext.sandwich',
 ]
