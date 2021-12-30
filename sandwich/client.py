@@ -26,50 +26,51 @@ DEALINGS IN THE SOFTWARE.
 from __future__ import annotations
 
 import asyncio
-from collections import namedtuple
 import logging
 import signal
 import sys
 import traceback
-from typing import Any, Callable, Coroutine, Dict, Generator, List, Optional, Sequence, TYPE_CHECKING, Tuple, TypeVar, Union
+from collections import namedtuple
+from typing import (TYPE_CHECKING, Any, Callable, Coroutine, Dict, Generator,
+                    List, Optional, Sequence, Tuple, TypeVar, Union)
 
 import aiohttp
-from sandwich.abc import SandwichEvent
+
+from sandwich.daemon import SandwichEvent, SandwichIdentifier, SandwichIdentifiers
 from sandwich.ext.sandwich.channel import Channel
 from sandwich.ext.sandwich.connection import ConnectionMixin
 
-from .user import User, ClientUser
-from .invite import Invite
-from .template import Template
-from .widget import Widget
-from .guild import Guild
-from .emoji import Emoji
-from .channel import _threaded_channel_factory, PartialMessageable
-from .enums import ChannelType
-from .mentions import AllowedMentions
-from .errors import *
-from .enums import Status, VoiceRegion
-from .flags import ApplicationFlags, Intents
-from .activity import ActivityTypes, BaseActivity, create_activity
-from .http import HTTPClient
-from .state import ConnectionState
 from . import utils
-from .utils import MISSING
-from .object import Object
-from .backoff import ExponentialBackoff
-from .webhook import Webhook
-from .iterators import GuildIterator
+from .activity import ActivityTypes, BaseActivity, create_activity
 from .appinfo import AppInfo
-from .ui.view import View
+from .channel import PartialMessageable, _threaded_channel_factory
+from .emoji import Emoji
+from .enums import ChannelType, Status, VoiceRegion
+from .errors import *
+from .flags import ApplicationFlags, Intents
+from .guild import Guild
+from .http import HTTPClient
+from .invite import Invite
+from .iterators import GuildIterator
+from .mentions import AllowedMentions
+from .object import Object
 from .stage_instance import StageInstance
+from .state import ConnectionState
+from .sticker import (GuildSticker, StandardSticker, StickerPack,
+                      _sticker_factory)
+from .template import Template
 from .threads import Thread
-from .sticker import GuildSticker, StandardSticker, StickerPack, _sticker_factory
+from .ui.view import View
+from .user import BaseUser, ClientUser, User
+from .utils import MISSING
+from .webhook import Webhook
+from .widget import Widget
 
 if TYPE_CHECKING:
-    from .abc import SnowflakeTime, PrivateChannel, GuildChannel, Snowflake
+    from .abc import GuildChannel, PrivateChannel, Snowflake, SnowflakeTime
     from .channel import DMChannel
-    from .message import Message
     from .member import Member
+    from .message import Message
 
 __all__ = (
     'Client',
@@ -212,6 +213,7 @@ class Client:
         *,
         connection: ConnectionMixin,
         channel: Channel,
+        identifiers: SandwichIdentifiers,
         loop: Optional[asyncio.AbstractEventLoop] = None,
         **options: Any,
     ):
@@ -252,6 +254,8 @@ class Client:
         self._dispatch = lambda *args: None
         # generic event listeners
         self._dispatch_listeners = []
+
+        self._identifiers = identifiers
 
     # internals
 
@@ -935,20 +939,29 @@ class Client:
         self._dispatch_listeners.append(entry)
         return future
 
-    # def handle_dispatch(self, event: str, data: any) -> None:
     def handle_dispatch(self, event: SandwichEvent) -> None:
+        identifier = self._identifiers.get_identifier(
+            event.application_name)
+
+        if identifier is None:
+            print("Unknown identifier", event.application_name)
+            return
+
         event_name = event.event_name
         data = event.data
 
-        self._connection.user = ClientUser(
-            state=self._connection, data={"id": event.application_id, "username": "", "discriminator": "", "avatar": ""})
+        self._connection.user = identifier.user
+        self.http.token = identifier.token
+
+        self.shard_id = event.shard_id
+        self.shard_count = event.shard_count
 
         try:
             func = self._connection.parsers[event_name]
         except KeyError:
             _log.debug('Unknown event %s.', event_name)
         else:
-            func(data)
+            func(event)
 
         # remove the dispatched listeners
         removed = []
@@ -1000,7 +1013,6 @@ class Client:
         """
 
         if not asyncio.iscoroutinefunction(coro):
-            print("A")
             raise TypeError('event registered must be a coroutine function')
 
         setattr(self, coro.__name__, coro)

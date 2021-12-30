@@ -26,54 +26,54 @@ DEALINGS IN THE SOFTWARE.
 from __future__ import annotations
 
 import asyncio
-from collections import deque, OrderedDict
 import copy
 import datetime
+import inspect
 import itertools
 import logging
-from typing import Dict, Optional, TYPE_CHECKING, Union, Callable, Any, List, TypeVar, Coroutine, Sequence, Tuple, Deque
-import inspect
-
 import os
+from collections import OrderedDict, deque
+from typing import (TYPE_CHECKING, Any, Callable, Coroutine, Deque, Dict, List,
+                    Optional, Sequence, Tuple, TypeVar, Union)
 
-from .guild import Guild
+from . import utils
 from .activity import BaseActivity
-from .user import User, ClientUser
-from .emoji import Emoji
-from .mentions import AllowedMentions
-from .partial_emoji import PartialEmoji
-from .message import Message
 from .channel import *
 from .channel import _channel_factory
-from .raw_models import *
-from .member import Member
-from .role import Role
-from .enums import ChannelType, try_enum, Status
-from . import utils
+from .daemon import SandwichEvent
+from .emoji import Emoji
+from .enums import ChannelType, Status, try_enum
 from .flags import ApplicationFlags, Intents, MemberCacheFlags
-from .object import Object
-from .invite import Invite
+from .guild import Guild
 from .integrations import _integration_factory
 from .interactions import Interaction
-from .ui.view import ViewStore, View
+from .invite import Invite
+from .member import Member
+from .mentions import AllowedMentions
+from .message import Message
+from .object import Object
+from .partial_emoji import PartialEmoji
+from .raw_models import *
+from .role import Role
 from .stage_instance import StageInstance
-from .threads import Thread, ThreadMember
 from .sticker import GuildSticker
+from .threads import Thread, ThreadMember
+from .ui.view import View, ViewStore
+from .user import ClientUser, User
 
 if TYPE_CHECKING:
     from .abc import PrivateChannel
-    from .message import MessageableChannel
+    from .client import Client
     from .guild import GuildChannel, VocalGuildChannel
     from .http import HTTPClient
-    from .client import Client
-
+    from .message import MessageableChannel
     from .types.activity import Activity as ActivityPayload
     from .types.channel import DMChannel as DMChannelPayload
-    from .types.user import User as UserPayload
     from .types.emoji import Emoji as EmojiPayload
-    from .types.sticker import GuildSticker as GuildStickerPayload
     from .types.guild import Guild as GuildPayload
     from .types.message import Message as MessagePayload
+    from .types.sticker import GuildSticker as GuildStickerPayload
+    from .types.user import User
 
     T = TypeVar('T')
     CS = TypeVar('CS', bound='ConnectionState')
@@ -314,7 +314,7 @@ class ConnectionState:
         ret.value = self._intents.value
         return ret
 
-    def store_user(self, data: UserPayload) -> User:
+    def store_user(self, data: User) -> User:
         user_id = int(data['id'])
         try:
             return self._users[user_id]
@@ -328,7 +328,7 @@ class ConnectionState:
     def deref_user(self, user_id: int) -> None:
         self._users.pop(user_id, None)
 
-    def create_user(self, data: UserPayload) -> User:
+    def create_user(self, data: User) -> User:
         return User(state=self, data=data)
 
     def deref_user_no_intents(self, user_id: int) -> None:
@@ -477,18 +477,18 @@ class ConnectionState:
     async def query_members(self, guild: Guild, query: str, limit: int, user_ids: List[int], cache: bool, presences: bool):
         raise NotImplementedError()
 
-    def parse_ready(self, data) -> None:
+    def parse_ready(self, event: SandwichEvent) -> None:
         if self._ready_task is not None:
             self._ready_task.cancel()
 
         self._ready_state = asyncio.Queue()
         self.clear(views=False)
-        self.user = ClientUser(state=self, data=data['user'])
-        self.store_user(data['user'])
+        self.user = ClientUser(state=self, data=event.data['user'])
+        self.store_user(event.data['user'])
 
         if self.application_id is None:
             try:
-                application = data['application']
+                application = event.data['application']
             except KeyError:
                 pass
             else:
@@ -498,19 +498,19 @@ class ConnectionState:
                 self.application_flags = ApplicationFlags._from_value(
                     application['flags'])  # type: ignore
 
-        for guild_data in data['guilds']:
+        for guild_data in event.data['guilds']:
             self._add_guild_from_data(guild_data)
 
         self.dispatch('connect')
         self._ready_task = asyncio.create_task(self._delay_ready())
 
-    def parse_resumed(self, data) -> None:
+    def parse_resumed(self, event: SandwichEvent) -> None:
         self.dispatch('resumed')
 
-    def parse_message_create(self, data) -> None:
-        channel, _ = self._get_guild_channel(data)
+    def parse_message_create(self, event: SandwichEvent) -> None:
+        channel, _ = self._get_guild_channel(event.data)
         # channel would be the correct type here
-        message = Message(channel=channel, data=data,
+        message = Message(channel=channel, data=event.data,
                           state=self)  # type: ignore
         self.dispatch('message', message)
         if self._messages is not None:
@@ -519,8 +519,8 @@ class ConnectionState:
         if channel and channel.__class__ in (TextChannel, Thread):
             channel.last_message_id = message.id  # type: ignore
 
-    def parse_message_delete(self, data) -> None:
-        raw = RawMessageDeleteEvent(data)
+    def parse_message_delete(self, event: SandwichEvent) -> None:
+        raw = RawMessageDeleteEvent(event.data)
         found = self._get_message(raw.message_id)
         raw.cached_message = found
         self.dispatch('raw_message_delete', raw)
@@ -528,8 +528,8 @@ class ConnectionState:
             self.dispatch('message_delete', found)
             self._messages.remove(found)
 
-    def parse_message_delete_bulk(self, data) -> None:
-        raw = RawBulkMessageDeleteEvent(data)
+    def parse_message_delete_bulk(self, event: SandwichEvent) -> None:
+        raw = RawBulkMessageDeleteEvent(event.data)
         if self._messages:
             found_messages = [
                 message for message in self._messages if message.id in raw.message_ids]
@@ -543,14 +543,14 @@ class ConnectionState:
                 # self._messages won't be None here
                 self._messages.remove(msg)  # type: ignore
 
-    def parse_message_update(self, data) -> None:
-        raw = RawMessageUpdateEvent(data)
+    def parse_message_update(self, event: SandwichEvent) -> None:
+        raw = RawMessageUpdateEvent(event.data)
         message = self._get_message(raw.message_id)
         if message is not None:
             older_message = copy.copy(message)
             raw.cached_message = older_message
             self.dispatch('raw_message_edit', raw)
-            message._update(data)
+            message._update(event.data)
             # Coerce the `after` parameter to take the new updated Member
             # ref: #5999
             older_message.author = message.author
@@ -558,18 +558,18 @@ class ConnectionState:
         else:
             self.dispatch('raw_message_edit', raw)
 
-        if 'components' in data and self._view_store.is_message_tracked(raw.message_id):
+        if 'components' in event.data and self._view_store.is_message_tracked(raw.message_id):
             self._view_store.update_from_message(
-                raw.message_id, data['components'])
+                raw.message_id, event.data['components'])
 
-    def parse_message_reaction_add(self, data) -> None:
-        emoji = data['emoji']
+    def parse_message_reaction_add(self, event: SandwichEvent) -> None:
+        emoji = event.data['emoji']
         emoji_id = utils._get_as_snowflake(emoji, 'id')
         emoji = PartialEmoji.with_state(self, id=emoji_id, animated=emoji.get(
             'animated', False), name=emoji['name'])
-        raw = RawReactionActionEvent(data, emoji, 'REACTION_ADD')
+        raw = RawReactionActionEvent(event.data, emoji, 'REACTION_ADD')
 
-        member_data = data.get('member')
+        member_data = event.data.get('member')
         if member_data:
             guild = self._get_guild(raw.guild_id)
             if guild is not None:
@@ -584,15 +584,15 @@ class ConnectionState:
         message = self._get_message(raw.message_id)
         if message is not None:
             emoji = self._upgrade_partial_emoji(emoji)
-            reaction = message._add_reaction(data, emoji, raw.user_id)
+            reaction = message._add_reaction(event.data, emoji, raw.user_id)
             user = raw.member or self._get_reaction_user(
                 message.channel, raw.user_id)
 
             if user:
                 self.dispatch('reaction_add', reaction, user)
 
-    def parse_message_reaction_remove_all(self, data) -> None:
-        raw = RawReactionClearEvent(data)
+    def parse_message_reaction_remove_all(self, event: SandwichEvent) -> None:
+        raw = RawReactionClearEvent(event.data)
         self.dispatch('raw_reaction_clear', raw)
 
         message = self._get_message(raw.message_id)
@@ -601,18 +601,19 @@ class ConnectionState:
             message.reactions.clear()
             self.dispatch('reaction_clear', message, old_reactions)
 
-    def parse_message_reaction_remove(self, data) -> None:
-        emoji = data['emoji']
+    def parse_message_reaction_remove(self, event: SandwichEvent) -> None:
+        emoji = event.data['emoji']
         emoji_id = utils._get_as_snowflake(emoji, 'id')
         emoji = PartialEmoji.with_state(self, id=emoji_id, name=emoji['name'])
-        raw = RawReactionActionEvent(data, emoji, 'REACTION_REMOVE')
+        raw = RawReactionActionEvent(event.data, emoji, 'REACTION_REMOVE')
         self.dispatch('raw_reaction_remove', raw)
 
         message = self._get_message(raw.message_id)
         if message is not None:
             emoji = self._upgrade_partial_emoji(emoji)
             try:
-                reaction = message._remove_reaction(data, emoji, raw.user_id)
+                reaction = message._remove_reaction(
+                    event.data, emoji, raw.user_id)
             except (AttributeError, ValueError):  # eventual consistency lol
                 pass
             else:
@@ -620,11 +621,11 @@ class ConnectionState:
                 if user:
                     self.dispatch('reaction_remove', reaction, user)
 
-    def parse_message_reaction_remove_emoji(self, data) -> None:
-        emoji = data['emoji']
+    def parse_message_reaction_remove_emoji(self, event: SandwichEvent) -> None:
+        emoji = event.data['emoji']
         emoji_id = utils._get_as_snowflake(emoji, 'id')
         emoji = PartialEmoji.with_state(self, id=emoji_id, name=emoji['name'])
-        raw = RawReactionClearEmojiEvent(data, emoji)
+        raw = RawReactionClearEmojiEvent(event.data, emoji)
         self.dispatch('raw_reaction_clear_emoji', raw)
 
         message = self._get_message(raw.message_id)
@@ -637,17 +638,17 @@ class ConnectionState:
                 if reaction:
                     self.dispatch('reaction_clear_emoji', reaction)
 
-    def parse_interaction_create(self, data) -> None:
-        interaction = Interaction(data=data, state=self)
-        if data['type'] == 3:  # interaction component
+    def parse_interaction_create(self, event: SandwichEvent) -> None:
+        interaction = Interaction(data=event.data, state=self)
+        if event.data['type'] == 3:  # interaction component
             custom_id = interaction.data['custom_id']  # type: ignore
             component_type = interaction.data['component_type']  # type: ignore
             self._view_store.dispatch(component_type, custom_id, interaction)
 
         self.dispatch('interaction', interaction)
 
-    def parse_presence_update(self, data) -> None:
-        guild_id = utils._get_as_snowflake(data, 'guild_id')
+    def parse_presence_update(self, event: SandwichEvent) -> None:
+        guild_id = utils._get_as_snowflake(event.data, 'guild_id')
         # guild_id won't be None here
         guild = self._get_guild(guild_id)
         if guild is None:
@@ -655,7 +656,7 @@ class ConnectionState:
                 'PRESENCE_UPDATE referencing an unknown guild ID: %s. Discarding.', guild_id)
             return
 
-        user = data['user']
+        user = event.data['user']
         member_id = int(user['id'])
         member = guild.get_member(member_id)
         if member is None:
@@ -664,55 +665,56 @@ class ConnectionState:
             return
 
         old_member = Member._copy(member)
-        user_update = member._presence_update(data=data, user=user)
+        user_update = member._presence_update(data=event.data, user=user)
         if user_update:
             self.dispatch('user_update', user_update[0], user_update[1])
 
         self.dispatch('presence_update', old_member, member)
 
-    def parse_user_update(self, data) -> None:
+    def parse_user_update(self, event: SandwichEvent) -> None:
         # self.user is *always* cached when this is called
         user: ClientUser = self.user  # type: ignore
-        user._update(data)
+        user._update(event.data)
         ref = self._users.get(user.id)
         if ref:
-            ref._update(data)
+            ref._update(event.data)
 
-    def parse_invite_create(self, data) -> None:
-        invite = Invite.from_gateway(state=self, data=data)
+    def parse_invite_create(self, event: SandwichEvent) -> None:
+        invite = Invite.from_gateway(state=self, data=event.data)
         self.dispatch('invite_create', invite)
 
-    def parse_invite_delete(self, data) -> None:
-        invite = Invite.from_gateway(state=self, data=data)
+    def parse_invite_delete(self, event: SandwichEvent) -> None:
+        invite = Invite.from_gateway(state=self, data=event.data)
         self.dispatch('invite_delete', invite)
 
-    def parse_channel_delete(self, data) -> None:
-        guild = self._get_guild(utils._get_as_snowflake(data, 'guild_id'))
-        channel_id = int(data['id'])
+    def parse_channel_delete(self, event: SandwichEvent) -> None:
+        guild = self._get_guild(
+            utils._get_as_snowflake(event.data, 'guild_id'))
+        channel_id = int(event.data['id'])
         if guild is not None:
             channel = guild.get_channel(channel_id)
             if channel is not None:
                 guild._remove_channel(channel)
                 self.dispatch('guild_channel_delete', channel)
 
-    def parse_channel_update(self, data) -> None:
-        channel_type = try_enum(ChannelType, data.get('type'))
-        channel_id = int(data['id'])
+    def parse_channel_update(self, event: SandwichEvent) -> None:
+        channel_type = try_enum(ChannelType, event.data.get('type'))
+        channel_id = int(event.data['id'])
         if channel_type is ChannelType.group:
             channel = self._get_private_channel(channel_id)
             old_channel = copy.copy(channel)
             # the channel is a GroupChannel
-            channel._update_group(data)  # type: ignore
+            channel._update_group(event.data)  # type: ignore
             self.dispatch('private_channel_update', old_channel, channel)
             return
 
-        guild_id = utils._get_as_snowflake(data, 'guild_id')
+        guild_id = utils._get_as_snowflake(event.data, 'guild_id')
         guild = self._get_guild(guild_id)
         if guild is not None:
             channel = guild.get_channel(channel_id)
             if channel is not None:
                 old_channel = copy.copy(channel)
-                channel._update(guild, data)
+                channel._update(guild, event.data)
                 self.dispatch('guild_channel_update', old_channel, channel)
             else:
                 _log.debug(
@@ -721,19 +723,19 @@ class ConnectionState:
             _log.debug(
                 'CHANNEL_UPDATE referencing an unknown guild ID: %s. Discarding.', guild_id)
 
-    def parse_channel_create(self, data) -> None:
-        factory, ch_type = _channel_factory(data['type'])
+    def parse_channel_create(self, event: SandwichEvent) -> None:
+        factory, ch_type = _channel_factory(event.data['type'])
         if factory is None:
             _log.debug(
-                'CHANNEL_CREATE referencing an unknown channel type %s. Discarding.', data['type'])
+                'CHANNEL_CREATE referencing an unknown channel type %s. Discarding.', event.data['type'])
             return
 
-        guild_id = utils._get_as_snowflake(data, 'guild_id')
+        guild_id = utils._get_as_snowflake(event.data, 'guild_id')
         guild = self._get_guild(guild_id)
         if guild is not None:
             # the factory can't be a DMChannel or GroupChannel here
             channel = factory(guild=guild, state=self,
-                              data=data)  # type: ignore
+                              data=event.data)  # type: ignore
             guild._add_channel(channel)  # type: ignore
             self.dispatch('guild_channel_create', channel)
         else:
@@ -741,10 +743,10 @@ class ConnectionState:
                 'CHANNEL_CREATE referencing an unknown guild ID: %s. Discarding.', guild_id)
             return
 
-    def parse_channel_pins_update(self, data) -> None:
-        channel_id = int(data['channel_id'])
+    def parse_channel_pins_update(self, event: SandwichEvent) -> None:
+        channel_id = int(event.data['channel_id'])
         try:
-            guild = self._get_guild(int(data['guild_id']))
+            guild = self._get_guild(int(event.data['guild_id']))
         except KeyError:
             guild = None
             channel = self._get_private_channel(channel_id)
@@ -757,62 +759,62 @@ class ConnectionState:
             return
 
         last_pin = utils.parse_time(
-            data['last_pin_timestamp']) if data['last_pin_timestamp'] else None
+            event.data['last_pin_timestamp']) if event.data['last_pin_timestamp'] else None
 
         if guild is None:
             self.dispatch('private_channel_pins_update', channel, last_pin)
         else:
             self.dispatch('guild_channel_pins_update', channel, last_pin)
 
-    def parse_thread_create(self, data) -> None:
-        guild_id = int(data['guild_id'])
+    def parse_thread_create(self, event: SandwichEvent) -> None:
+        guild_id = int(event.data['guild_id'])
         guild: Optional[Guild] = self._get_guild(guild_id)
         if guild is None:
             _log.debug(
                 'THREAD_CREATE referencing an unknown guild ID: %s. Discarding', guild_id)
             return
 
-        thread = Thread(guild=guild, state=guild._state, data=data)
+        thread = Thread(guild=guild, state=guild._state, data=event.data)
         has_thread = guild.get_thread(thread.id)
         guild._add_thread(thread)
         if not has_thread:
             self.dispatch('thread_join', thread)
 
-    def parse_thread_update(self, data) -> None:
-        guild_id = int(data['guild_id'])
+    def parse_thread_update(self, event: SandwichEvent) -> None:
+        guild_id = int(event.data['guild_id'])
         guild = self._get_guild(guild_id)
         if guild is None:
             _log.debug(
                 'THREAD_UPDATE referencing an unknown guild ID: %s. Discarding', guild_id)
             return
 
-        thread_id = int(data['id'])
+        thread_id = int(event.data['id'])
         thread = guild.get_thread(thread_id)
         if thread is not None:
             old = copy.copy(thread)
-            thread._update(data)
+            thread._update(event.data)
             self.dispatch('thread_update', old, thread)
         else:
-            thread = Thread(guild=guild, state=guild._state, data=data)
+            thread = Thread(guild=guild, state=guild._state, data=event.data)
             guild._add_thread(thread)
             self.dispatch('thread_join', thread)
 
-    def parse_thread_delete(self, data) -> None:
-        guild_id = int(data['guild_id'])
+    def parse_thread_delete(self, event: SandwichEvent) -> None:
+        guild_id = int(event.data['guild_id'])
         guild = self._get_guild(guild_id)
         if guild is None:
             _log.debug(
                 'THREAD_DELETE referencing an unknown guild ID: %s. Discarding', guild_id)
             return
 
-        thread_id = int(data['id'])
+        thread_id = int(event.data['id'])
         thread = guild.get_thread(thread_id)
         if thread is not None:
             guild._remove_thread(thread)  # type: ignore
             self.dispatch('thread_delete', thread)
 
-    def parse_thread_list_sync(self, data) -> None:
-        guild_id = int(data['guild_id'])
+    def parse_thread_list_sync(self, event: SandwichEvent) -> None:
+        guild_id = int(event.data['guild_id'])
         guild: Optional[Guild] = self._get_guild(guild_id)
         if guild is None:
             _log.debug(
@@ -820,7 +822,7 @@ class ConnectionState:
             return
 
         try:
-            channel_ids = set(data['channel_ids'])
+            channel_ids = set(event.data['channel_ids'])
         except KeyError:
             # If not provided, then the entire guild is being synced
             # So all previous thread data should be overwritten
@@ -830,9 +832,9 @@ class ConnectionState:
             previous_threads = guild._filter_threads(channel_ids)
 
         threads = {d['id']: guild._store_thread(
-            d) for d in data.get('threads', [])}
+            d) for d in event.data.get('threads', [])}
 
-        for member in data.get('members', []):
+        for member in event.data.get('members', []):
             try:
                 # note: member['id'] is the thread_id
                 thread = threads[member['id']]
@@ -849,33 +851,33 @@ class ConnectionState:
         for thread in previous_threads.values():
             self.dispatch('thread_remove', thread)
 
-    def parse_thread_member_update(self, data) -> None:
-        guild_id = int(data['guild_id'])
+    def parse_thread_member_update(self, event: SandwichEvent) -> None:
+        guild_id = int(event.data['guild_id'])
         guild: Optional[Guild] = self._get_guild(guild_id)
         if guild is None:
             _log.debug(
                 'THREAD_MEMBER_UPDATE referencing an unknown guild ID: %s. Discarding', guild_id)
             return
 
-        thread_id = int(data['id'])
+        thread_id = int(event.data['id'])
         thread: Optional[Thread] = guild.get_thread(thread_id)
         if thread is None:
             _log.debug(
                 'THREAD_MEMBER_UPDATE referencing an unknown thread ID: %s. Discarding', thread_id)
             return
 
-        member = ThreadMember(thread, data)
+        member = ThreadMember(thread, event.data)
         thread.me = member
 
-    def parse_thread_members_update(self, data) -> None:
-        guild_id = int(data['guild_id'])
+    def parse_thread_members_update(self, event: SandwichEvent) -> None:
+        guild_id = int(event.data['guild_id'])
         guild: Optional[Guild] = self._get_guild(guild_id)
         if guild is None:
             _log.debug(
                 'THREAD_MEMBERS_UPDATE referencing an unknown guild ID: %s. Discarding', guild_id)
             return
 
-        thread_id = int(data['id'])
+        thread_id = int(event.data['id'])
         thread: Optional[Thread] = guild.get_thread(thread_id)
         if thread is None:
             _log.debug(
@@ -883,9 +885,9 @@ class ConnectionState:
             return
 
         added_members = [ThreadMember(thread, d)
-                         for d in data.get('added_members', [])]
+                         for d in event.data.get('added_members', [])]
         removed_member_ids = [int(x)
-                              for x in data.get('removed_member_ids', [])]
+                              for x in event.data.get('removed_member_ids', [])]
         self_id = self.self_id
         for member in added_members:
             if member.id != self_id:
@@ -903,14 +905,14 @@ class ConnectionState:
             else:
                 self.dispatch('thread_remove', thread)
 
-    def parse_guild_member_add(self, data) -> None:
-        guild = self._get_guild(int(data['guild_id']))
+    def parse_guild_member_add(self, event: SandwichEvent) -> None:
+        guild = self._get_guild(int(event.data['guild_id']))
         if guild is None:
             _log.debug(
-                'GUILD_MEMBER_ADD referencing an unknown guild ID: %s. Discarding.', data['guild_id'])
+                'GUILD_MEMBER_ADD referencing an unknown guild ID: %s. Discarding.', event.data['guild_id'])
             return
 
-        member = Member(guild=guild, data=data, state=self)
+        member = Member(guild=guild, data=event.data, state=self)
         if self.member_cache_flags.joined:
             guild._add_member(member)
 
@@ -921,36 +923,36 @@ class ConnectionState:
 
         self.dispatch('member_join', member)
 
-    def parse_guild_member_remove(self, data) -> None:
-        guild = self._get_guild(int(data['guild_id']))
+    def parse_guild_member_remove(self, event: SandwichEvent) -> None:
+        guild = self._get_guild(int(event.data['guild_id']))
         if guild is not None:
             try:
                 guild._member_count -= 1
             except AttributeError:
                 pass
 
-            user_id = int(data['user']['id'])
+            user_id = int(event.data['user']['id'])
             member = guild.get_member(user_id)
             if member is not None:
                 guild._remove_member(member)  # type: ignore
                 self.dispatch('member_remove', member)
         else:
             _log.debug(
-                'GUILD_MEMBER_REMOVE referencing an unknown guild ID: %s. Discarding.', data['guild_id'])
+                'GUILD_MEMBER_REMOVE referencing an unknown guild ID: %s. Discarding.', event.data['guild_id'])
 
-    def parse_guild_member_update(self, data) -> None:
-        guild = self._get_guild(int(data['guild_id']))
-        user = data['user']
+    def parse_guild_member_update(self, event: SandwichEvent) -> None:
+        guild = self._get_guild(int(event.data['guild_id']))
+        user = event.data['user']
         user_id = int(user['id'])
         if guild is None:
             _log.debug(
-                'GUILD_MEMBER_UPDATE referencing an unknown guild ID: %s. Discarding.', data['guild_id'])
+                'GUILD_MEMBER_UPDATE referencing an unknown guild ID: %s. Discarding.', event.data['guild_id'])
             return
 
         member = guild.get_member(user_id)
         if member is not None:
             old_member = Member._copy(member)
-            member._update(data)
+            member._update(event.data)
             user_update = member._update_inner_user(user)
             if user_update:
                 self.dispatch('user_update', user_update[0], user_update[1])
@@ -958,7 +960,7 @@ class ConnectionState:
             self.dispatch('member_update', old_member, member)
         else:
             if self.member_cache_flags.joined:
-                member = Member(data=data, guild=guild, state=self)
+                member = Member(data=event.data, guild=guild, state=self)
 
                 # Force an update on the inner user if necessary
                 user_update = member._update_inner_user(user)
@@ -970,11 +972,11 @@ class ConnectionState:
             _log.debug(
                 'GUILD_MEMBER_UPDATE referencing an unknown member ID: %s. Discarding.', user_id)
 
-    def parse_guild_emojis_update(self, data) -> None:
-        guild = self._get_guild(int(data['guild_id']))
+    def parse_guild_emojis_update(self, event: SandwichEvent) -> None:
+        guild = self._get_guild(int(event.data['guild_id']))
         if guild is None:
             _log.debug(
-                'GUILD_EMOJIS_UPDATE referencing an unknown guild ID: %s. Discarding.', data['guild_id'])
+                'GUILD_EMOJIS_UPDATE referencing an unknown guild ID: %s. Discarding.', event.data['guild_id'])
             return
 
         before_emojis = guild.emojis
@@ -986,11 +988,11 @@ class ConnectionState:
         self.dispatch('guild_emojis_update', guild,
                       before_emojis, guild.emojis)
 
-    def parse_guild_stickers_update(self, data) -> None:
-        guild = self._get_guild(int(data['guild_id']))
+    def parse_guild_stickers_update(self, event: SandwichEvent) -> None:
+        guild = self._get_guild(int(event.data['guild_id']))
         if guild is None:
             _log.debug(
-                'GUILD_STICKERS_UPDATE referencing an unknown guild ID: %s. Discarding.', data['guild_id'])
+                'GUILD_STICKERS_UPDATE referencing an unknown guild ID: %s. Discarding.', event.data['guild_id'])
             return
 
         before_stickers = guild.stickers
@@ -1041,13 +1043,13 @@ class ConnectionState:
         else:
             self.dispatch('guild_join', guild)
 
-    def parse_guild_create(self, data) -> None:
-        unavailable = data.get('unavailable')
+    def parse_guild_create(self, event: SandwichEvent) -> None:
+        unavailable = event.data.get('unavailable')
         if unavailable is True:
             # joined a guild with unavailable == True so..
             return
 
-        guild = self._get_create_guild(data)
+        guild = self._get_create_guild(event.data)
 
         try:
             # Notify the on_ready state, if any, that this guild is complete.
@@ -1069,24 +1071,24 @@ class ConnectionState:
         else:
             self.dispatch('guild_join', guild)
 
-    def parse_guild_update(self, data) -> None:
-        guild = self._get_guild(int(data['id']))
+    def parse_guild_update(self, event: SandwichEvent) -> None:
+        guild = self._get_guild(int(event.data['id']))
         if guild is not None:
             old_guild = copy.copy(guild)
-            guild._from_data(data)
+            guild._from_data(event.data)
             self.dispatch('guild_update', old_guild, guild)
         else:
             _log.debug(
-                'GUILD_UPDATE referencing an unknown guild ID: %s. Discarding.', data['id'])
+                'GUILD_UPDATE referencing an unknown guild ID: %s. Discarding.', event.data['id'])
 
-    def parse_guild_delete(self, data) -> None:
-        guild = self._get_guild(int(data['id']))
+    def parse_guild_delete(self, event: SandwichEvent) -> None:
+        guild = self._get_guild(int(event.data['id']))
         if guild is None:
             _log.debug(
-                'GUILD_DELETE referencing an unknown guild ID: %s. Discarding.', data['id'])
+                'GUILD_DELETE referencing an unknown guild ID: %s. Discarding.', event.data['id'])
             return
 
-        if data.get('unavailable', False):
+        if event.data.get('unavailable', False):
             # GUILD_DELETE with unavailable being True means that the
             # guild that was available is now currently unavailable
             guild.unavailable = True
@@ -1102,44 +1104,44 @@ class ConnectionState:
         self._remove_guild(guild)
         self.dispatch('guild_remove', guild)
 
-    def parse_guild_ban_add(self, data) -> None:
+    def parse_guild_ban_add(self, event: SandwichEvent) -> None:
         # we make the assumption that GUILD_BAN_ADD is done
         # before GUILD_MEMBER_REMOVE is called
         # hence we don't remove it from cache or do anything
         # strange with it, the main purpose of this event
         # is mainly to dispatch to another event worth listening to for logging
-        guild = self._get_guild(int(data['guild_id']))
+        guild = self._get_guild(int(event.data['guild_id']))
         if guild is not None:
             try:
-                user = User(data=data['user'], state=self)
+                user = User(data=event.data['user'], state=self)
             except KeyError:
                 pass
             else:
                 member = guild.get_member(user.id) or user
                 self.dispatch('member_ban', guild, member)
 
-    def parse_guild_ban_remove(self, data) -> None:
-        guild = self._get_guild(int(data['guild_id']))
-        if guild is not None and 'user' in data:
-            user = self.store_user(data['user'])
+    def parse_guild_ban_remove(self, event: SandwichEvent) -> None:
+        guild = self._get_guild(int(event.data['guild_id']))
+        if guild is not None and 'user' in event.data:
+            user = self.store_user(event.data['user'])
             self.dispatch('member_unban', guild, user)
 
-    def parse_guild_role_create(self, data) -> None:
-        guild = self._get_guild(int(data['guild_id']))
+    def parse_guild_role_create(self, event: SandwichEvent) -> None:
+        guild = self._get_guild(int(event.data['guild_id']))
         if guild is None:
             _log.debug(
-                'GUILD_ROLE_CREATE referencing an unknown guild ID: %s. Discarding.', data['guild_id'])
+                'GUILD_ROLE_CREATE referencing an unknown guild ID: %s. Discarding.', event.data['guild_id'])
             return
 
-        role_data = data['role']
+        role_data = event.data['role']
         role = Role(guild=guild, data=role_data, state=self)
         guild._add_role(role)
         self.dispatch('guild_role_create', role)
 
-    def parse_guild_role_delete(self, data) -> None:
-        guild = self._get_guild(int(data['guild_id']))
+    def parse_guild_role_delete(self, event: SandwichEvent) -> None:
+        guild = self._get_guild(int(event.data['guild_id']))
         if guild is not None:
-            role_id = int(data['role_id'])
+            role_id = int(event.data['role_id'])
             try:
                 role = guild._remove_role(role_id)
             except KeyError:
@@ -1148,12 +1150,12 @@ class ConnectionState:
                 self.dispatch('guild_role_delete', role)
         else:
             _log.debug(
-                'GUILD_ROLE_DELETE referencing an unknown guild ID: %s. Discarding.', data['guild_id'])
+                'GUILD_ROLE_DELETE referencing an unknown guild ID: %s. Discarding.', event.data['guild_id'])
 
-    def parse_guild_role_update(self, data) -> None:
-        guild = self._get_guild(int(data['guild_id']))
+    def parse_guild_role_update(self, event: SandwichEvent) -> None:
+        guild = self._get_guild(int(event.data['guild_id']))
         if guild is not None:
-            role_data = data['role']
+            role_data = event.data['role']
             role_id = int(role_data['id'])
             role = guild.get_role(role_id)
             if role is not None:
@@ -1162,16 +1164,16 @@ class ConnectionState:
                 self.dispatch('guild_role_update', old_role, role)
         else:
             _log.debug(
-                'GUILD_ROLE_UPDATE referencing an unknown guild ID: %s. Discarding.', data['guild_id'])
+                'GUILD_ROLE_UPDATE referencing an unknown guild ID: %s. Discarding.', event.data['guild_id'])
 
-    def parse_guild_members_chunk(self, data) -> None:
-        guild_id = int(data['guild_id'])
+    def parse_guild_members_chunk(self, event: SandwichEvent) -> None:
+        guild_id = int(event.data['guild_id'])
         guild = self._get_guild(guild_id)
-        presences = data.get('presences', [])
+        presences = event.data.get('presences', [])
 
         # the guild won't be None here
         members = [Member(guild=guild, data=member, state=self)
-                   for member in data.get('members', [])]  # type: ignore
+                   for member in event.data.get('members', [])]  # type: ignore
         _log.debug('Processed a chunk for %s members in guild ID %s.',
                    len(members), guild_id)
 
@@ -1184,119 +1186,123 @@ class ConnectionState:
                 if member is not None:
                     member._presence_update(presence, user)
 
-        complete = data.get('chunk_index', 0) + 1 == data.get('chunk_count')
+        complete = event.data.get('chunk_index', 0) + \
+            1 == event.data.get('chunk_count')
         self.process_chunk_requests(
-            guild_id, data.get('nonce'), members, complete)
+            guild_id, event.data.get('nonce'), members, complete)
 
-    def parse_guild_integrations_update(self, data) -> None:
-        guild = self._get_guild(int(data['guild_id']))
+    def parse_guild_integrations_update(self, event: SandwichEvent) -> None:
+        guild = self._get_guild(int(event.data['guild_id']))
         if guild is not None:
             self.dispatch('guild_integrations_update', guild)
         else:
             _log.debug(
-                'GUILD_INTEGRATIONS_UPDATE referencing an unknown guild ID: %s. Discarding.', data['guild_id'])
+                'GUILD_INTEGRATIONS_UPDATE referencing an unknown guild ID: %s. Discarding.', event.data['guild_id'])
 
-    def parse_integration_create(self, data) -> None:
-        guild_id = int(data.pop('guild_id'))
+    def parse_integration_create(self, event: SandwichEvent) -> None:
+        guild_id = int(event.data.pop('guild_id'))
         guild = self._get_guild(guild_id)
         if guild is not None:
-            cls, _ = _integration_factory(data['type'])
-            integration = cls(data=data, guild=guild)
+            cls, _ = _integration_factory(event.data['type'])
+            integration = cls(data=event.data, guild=guild)
             self.dispatch('integration_create', integration)
         else:
             _log.debug(
                 'INTEGRATION_CREATE referencing an unknown guild ID: %s. Discarding.', guild_id)
 
-    def parse_integration_update(self, data) -> None:
-        guild_id = int(data.pop('guild_id'))
+    def parse_integration_update(self, event: SandwichEvent) -> None:
+        guild_id = int(event.data.pop('guild_id'))
         guild = self._get_guild(guild_id)
         if guild is not None:
-            cls, _ = _integration_factory(data['type'])
-            integration = cls(data=data, guild=guild)
+            cls, _ = _integration_factory(event.data['type'])
+            integration = cls(data=event.data, guild=guild)
             self.dispatch('integration_update', integration)
         else:
             _log.debug(
                 'INTEGRATION_UPDATE referencing an unknown guild ID: %s. Discarding.', guild_id)
 
-    def parse_integration_delete(self, data) -> None:
-        guild_id = int(data['guild_id'])
+    def parse_integration_delete(self, event: SandwichEvent) -> None:
+        guild_id = int(event.data['guild_id'])
         guild = self._get_guild(guild_id)
         if guild is not None:
-            raw = RawIntegrationDeleteEvent(data)
+            raw = RawIntegrationDeleteEvent(event.data)
             self.dispatch('raw_integration_delete', raw)
         else:
             _log.debug(
                 'INTEGRATION_DELETE referencing an unknown guild ID: %s. Discarding.', guild_id)
 
-    def parse_webhooks_update(self, data) -> None:
-        guild = self._get_guild(int(data['guild_id']))
+    def parse_webhooks_update(self, event: SandwichEvent) -> None:
+        guild = self._get_guild(int(event.data['guild_id']))
         if guild is None:
             _log.debug(
-                'WEBHOOKS_UPDATE referencing an unknown guild ID: %s. Discarding', data['guild_id'])
+                'WEBHOOKS_UPDATE referencing an unknown guild ID: %s. Discarding', event.data['guild_id'])
             return
 
-        channel = guild.get_channel(int(data['channel_id']))
+        channel = guild.get_channel(int(event.data['channel_id']))
         if channel is not None:
             self.dispatch('webhooks_update', channel)
         else:
             _log.debug(
-                'WEBHOOKS_UPDATE referencing an unknown channel ID: %s. Discarding.', data['channel_id'])
+                'WEBHOOKS_UPDATE referencing an unknown channel ID: %s. Discarding.', event.data['channel_id'])
 
-    def parse_stage_instance_create(self, data) -> None:
-        guild = self._get_guild(int(data['guild_id']))
+    def parse_stage_instance_create(self, event: SandwichEvent) -> None:
+        guild = self._get_guild(int(event.data['guild_id']))
         if guild is not None:
-            stage_instance = StageInstance(guild=guild, state=self, data=data)
+            stage_instance = StageInstance(
+                guild=guild, state=self, data=event.data)
             guild._stage_instances[stage_instance.id] = stage_instance
             self.dispatch('stage_instance_create', stage_instance)
         else:
             _log.debug(
-                'STAGE_INSTANCE_CREATE referencing unknown guild ID: %s. Discarding.', data['guild_id'])
+                'STAGE_INSTANCE_CREATE referencing unknown guild ID: %s. Discarding.', event.data['guild_id'])
 
-    def parse_stage_instance_update(self, data) -> None:
-        guild = self._get_guild(int(data['guild_id']))
+    def parse_stage_instance_update(self, event: SandwichEvent) -> None:
+        guild = self._get_guild(int(event.data['guild_id']))
         if guild is not None:
-            stage_instance = guild._stage_instances.get(int(data['id']))
+            stage_instance = guild._stage_instances.get(int(event.data['id']))
             if stage_instance is not None:
                 old_stage_instance = copy.copy(stage_instance)
-                stage_instance._update(data)
+                stage_instance._update(event.data)
                 self.dispatch('stage_instance_update',
                               old_stage_instance, stage_instance)
             else:
                 _log.debug(
-                    'STAGE_INSTANCE_UPDATE referencing unknown stage instance ID: %s. Discarding.', data['id'])
+                    'STAGE_INSTANCE_UPDATE referencing unknown stage instance ID: %s. Discarding.', event.data['id'])
         else:
             _log.debug(
-                'STAGE_INSTANCE_UPDATE referencing unknown guild ID: %s. Discarding.', data['guild_id'])
+                'STAGE_INSTANCE_UPDATE referencing unknown guild ID: %s. Discarding.', event.data['guild_id'])
 
-    def parse_stage_instance_delete(self, data) -> None:
-        guild = self._get_guild(int(data['guild_id']))
+    def parse_stage_instance_delete(self, event: SandwichEvent) -> None:
+        guild = self._get_guild(int(event.data['guild_id']))
         if guild is not None:
             try:
-                stage_instance = guild._stage_instances.pop(int(data['id']))
+                stage_instance = guild._stage_instances.pop(
+                    int(event.data['id']))
             except KeyError:
                 pass
             else:
                 self.dispatch('stage_instance_delete', stage_instance)
         else:
             _log.debug(
-                'STAGE_INSTANCE_DELETE referencing unknown guild ID: %s. Discarding.', data['guild_id'])
+                'STAGE_INSTANCE_DELETE referencing unknown guild ID: %s. Discarding.', event.data['guild_id'])
 
-    def parse_voice_state_update(self, data) -> None:
-        guild = self._get_guild(utils._get_as_snowflake(data, 'guild_id'))
-        channel_id = utils._get_as_snowflake(data, 'channel_id')
+    def parse_voice_state_update(self, event: SandwichEvent) -> None:
+        guild = self._get_guild(
+            utils._get_as_snowflake(event.data, 'guild_id'))
+        channel_id = utils._get_as_snowflake(event.data, 'channel_id')
         flags = self.member_cache_flags
         # self.user is *always* cached when this is called
         self_id = self.user.id  # type: ignore
         if guild is not None:
-            if int(data['user_id']) == self_id:
+            if int(event.data['user_id']) == self_id:
                 voice = self._get_voice_client(guild.id)
                 if voice is not None:
-                    coro = voice.on_voice_state_update(data)
+                    coro = voice.on_voice_state_update(event.data)
                     asyncio.create_task(logging_coroutine(
                         coro, info='Voice Protocol voice state update handler'))
 
             member, before, after = guild._update_voice_state(
-                data, channel_id)  # type: ignore
+                event.data, channel_id)  # type: ignore
             if member is not None:
                 if flags.voice:
                     if channel_id is None and flags._voice_only and member.id != self_id:
@@ -1309,25 +1315,25 @@ class ConnectionState:
                 self.dispatch('voice_state_update', member, before, after)
             else:
                 _log.debug(
-                    'VOICE_STATE_UPDATE referencing an unknown member ID: %s. Discarding.', data['user_id'])
+                    'VOICE_STATE_UPDATE referencing an unknown member ID: %s. Discarding.', event.data['user_id'])
 
-    def parse_voice_server_update(self, data) -> None:
+    def parse_voice_server_update(self, event: SandwichEvent) -> None:
         try:
-            key_id = int(data['guild_id'])
+            key_id = int(event.data['guild_id'])
         except KeyError:
-            key_id = int(data['channel_id'])
+            key_id = int(event.data['channel_id'])
 
         vc = self._get_voice_client(key_id)
         if vc is not None:
-            coro = vc.on_voice_server_update(data)
+            coro = vc.on_voice_server_update(event.data)
             asyncio.create_task(logging_coroutine(
                 coro, info='Voice Protocol voice server update handler'))
 
-    def parse_typing_start(self, data) -> None:
-        channel, guild = self._get_guild_channel(data)
+    def parse_typing_start(self, event: SandwichEvent) -> None:
+        channel, guild = self._get_guild_channel(event.data)
         if channel is not None:
             member = None
-            user_id = utils._get_as_snowflake(data, 'user_id')
+            user_id = utils._get_as_snowflake(event.data, 'user_id')
             if isinstance(channel, DMChannel):
                 member = channel.recipient
 
@@ -1336,7 +1342,7 @@ class ConnectionState:
                 member = guild.get_member(user_id)  # type: ignore
 
                 if member is None:
-                    member_data = data.get('member')
+                    member_data = event.data.get('member')
                     if member_data:
                         member = Member(data=member_data,
                                         state=self, guild=guild)
@@ -1347,7 +1353,7 @@ class ConnectionState:
 
             if member is not None:
                 timestamp = datetime.datetime.fromtimestamp(
-                    data.get('timestamp'), tz=datetime.timezone.utc)
+                    event.data.get('timestamp'), tz=datetime.timezone.utc)
                 self.dispatch('typing', channel, member, timestamp)
 
     def _get_reaction_user(self, channel: MessageableChannel, user_id: int) -> Optional[Union[User, Member]]:

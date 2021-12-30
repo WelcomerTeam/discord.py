@@ -56,7 +56,7 @@ if TYPE_CHECKING:
     from .guild import Guild
     from .types.activity import PartialPresenceUpdate
     from .types.member import (
-        MemberWithUser as MemberWithUserPayload,
+        MemberWithUser as MemberWithUser,
         Member as MemberPayload,
         UserWithMember as UserWithMemberPayload,
     )
@@ -158,7 +158,7 @@ class VoiceState:
 
 
 def flatten_user(cls):
-    for attr, value in itertools.chain(BaseUser.__dict__.items(), User.__dict__.items()):
+    for attr, value in itertools.chain(BaseUser.__dict__.items(), UserPayload.__dict__.items()):
         # ignore private/special methods
         if attr.startswith('_'):
             continue
@@ -280,16 +280,16 @@ class Member(sandwich.abc.Messageable, _UserTag):
         default_avatar: Asset
         avatar: Optional[Asset]
         dm_channel: Optional[DMChannel]
-        create_dm = User.create_dm
+        create_dm = UserPayload.create_dm
         mutual_guilds: List[Guild]
         public_flags: PublicUserFlags
         banner: Optional[Asset]
         accent_color: Optional[Colour]
         accent_colour: Optional[Colour]
 
-    def __init__(self, *, data: MemberWithUserPayload, guild: Guild, state: ConnectionState):
+    def __init__(self, *, data: MemberWithUser, guild: Guild, state: ConnectionState):
         self._state: ConnectionState = state
-        self._user: User = state.store_user(data['user'])
+        self._user: UserPayload = state.store_user(data['user'])
         self.guild: Guild = guild
         self.joined_at: Optional[datetime.datetime] = utils.parse_time(
             data.get('joined_at'))
@@ -336,7 +336,7 @@ class Member(sandwich.abc.Messageable, _UserTag):
         self.pending = data.get('pending', False)
 
     @classmethod
-    def _try_upgrade(cls: Type[M], *, data: UserWithMemberPayload, guild: Guild, state: ConnectionState) -> Union[User, M]:
+    def _try_upgrade(cls: Type[M], *, data: UserWithMemberPayload, guild: Guild, state: ConnectionState) -> Union[UserPayload, M]:
         # A User object with a 'member' key
         try:
             member_data = data.pop('member')
@@ -388,7 +388,7 @@ class Member(sandwich.abc.Messageable, _UserTag):
         self._roles = utils.SnowflakeList(map(int, data['roles']))
         self._avatar = data.get('avatar')
 
-    def _presence_update(self, data: PartialPresenceUpdate, user: UserPayload) -> Optional[Tuple[User, User]]:
+    def _presence_update(self, data: PartialPresenceUpdate, user: UserPayload) -> Optional[Tuple[UserPayload, UserPayload]]:
         self.activities = tuple(map(create_activity, data['activities']))
         self._client_status = {
             # type: ignore
@@ -400,14 +400,14 @@ class Member(sandwich.abc.Messageable, _UserTag):
             return self._update_inner_user(user)
         return None
 
-    def _update_inner_user(self, user: UserPayload) -> Optional[Tuple[User, User]]:
+    def _update_inner_user(self, user: UserPayload) -> Optional[Tuple[UserPayload, UserPayload]]:
         u = self._user
         original = (u.name, u._avatar, u.discriminator, u._public_flags)
         # These keys seem to always be available
         modified = (user['username'], user['avatar'],
                     user['discriminator'], user.get('public_flags', 0))
         if original != modified:
-            to_return = User._copy(self._user)
+            to_return = UserPayload._copy(self._user)
             u.name, u._avatar, u.discriminator, u._public_flags = modified
             # Signal to dispatch on_user_update
             return to_return, u
